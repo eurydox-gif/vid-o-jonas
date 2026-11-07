@@ -15,7 +15,9 @@ Petite vidéo animée (64 s, 8 scènes × 8 s, 1920×1080) : **« Jonas : obéir
 
 ## Fichiers
 
-- `jonas.mp4` — la vidéo finale (H.264, 30 i/s, sans son).
+- `jonas_voix.mp4` — **la vidéo finale avec voix off** (H.264 + AAC).
+- `jonas.mp4` — la même vidéo sans son.
+- `narration.py` — texte de la voix off et assemblage audio (Piper TTS, voix française « siwis »).
 - `jonas.html` — l'animation (canvas), jouable directement dans un navigateur ; chaque image est une fonction du temps `renderFrame(t)`.
 - `render.js` — régénère la vidéo à partir de `jonas.html` (Playwright + ffmpeg).
 
@@ -26,3 +28,13 @@ node render.js jonas.mp4 30
 ```
 
 Images de contrôle (4 par scène) : `node render.js --stills dossier`.
+
+## Voix off
+
+```bash
+pip install piper-tts
+# modèle : https://huggingface.co/rhasspy/piper-voices/tree/main/fr/fr_FR/siwis/medium
+python3 narration.py chemin/fr_FR-siwis-medium.onnx jonas.mp4 jonas_voix.mp4
+```
+
+Le texte lu se modifie dans la liste `NARRATION` de `narration.py` (une phrase par scène).
