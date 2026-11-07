@@ -1,0 +1,869 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jonas : obéir même quand c'est difficile</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #111; }
+  body { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; font-family: "DejaVu Sans", Arial, sans-serif; color: #eee; }
+  canvas { width: min(100vw, 177.78vh - 60px); aspect-ratio: 16 / 9; display: block; background: #000; }
+  .controls { display: flex; gap: 10px; align-items: center; }
+  button { font: inherit; padding: 6px 14px; border-radius: 6px; border: 0; background: #2d7dd2; color: #fff; cursor: pointer; }
+  body.capture { background: #000; }
+  body.capture canvas { width: 1920px; height: 1080px; }
+  body.capture .controls { display: none; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<div class="controls">
+  <button id="play">▶ Lecture</button>
+  <button id="restart">⟲ Recommencer</button>
+  <span id="time">0.0 s</span>
+</div>
+<script>
+// ---------------------------------------------------------------------------
+// Jonas : obéir même quand c'est difficile — animation 8 scènes × 8 s
+// Toute l'image est une fonction pure du temps t (secondes) : renderFrame(t).
+// ---------------------------------------------------------------------------
+const W = 1280, H = 720;              // coordonnées logiques
+const SCENE = 8, NSCENES = 8, DURATION = SCENE * NSCENES;
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+const FONT = '"DejaVu Sans", "Arial Rounded MT Bold", Arial, sans-serif';
+
+// ---------- utilitaires ----------
+const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
+const lerp = (a, b, k) => a + (b - a) * k;
+const ease = k => { k = clamp(k); return k * k * (3 - 2 * k); };
+const easeOut = k => { k = clamp(k); return 1 - Math.pow(1 - k, 3); };
+const prog = (t, a, b) => clamp((t - a) / (b - a));
+const rnd = i => { const x = Math.sin(i * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
+const TAU = Math.PI * 2;
+
+function rrect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+function vgrad(y0, y1, stops) {
+  const g = ctx.createLinearGradient(0, y0, 0, y1);
+  stops.forEach((c, i) => g.addColorStop(i / (stops.length - 1), c));
+  return g;
+}
+function sky(top, bottom) { ctx.fillStyle = vgrad(0, H, [top, bottom]); ctx.fillRect(0, 0, W, H); }
+
+// ---------- éléments de décor ----------
+function sun(x, y, r, t) {
+  ctx.save();
+  ctx.translate(x, y);
+  const glow = ctx.createRadialGradient(0, 0, r * 0.5, 0, 0, r * 2.6);
+  glow.addColorStop(0, 'rgba(255,240,150,0.65)');
+  glow.addColorStop(1, 'rgba(255,240,150,0)');
+  ctx.fillStyle = glow;
+  ctx.beginPath(); ctx.arc(0, 0, r * 2.6, 0, TAU); ctx.fill();
+  ctx.rotate(t * 0.35);
+  ctx.fillStyle = '#ffd23f';
+  for (let i = 0; i < 12; i++) {
+    ctx.rotate(TAU / 12);
+    const L = r * (1.45 + 0.12 * Math.sin(t * 3 + i));
+    ctx.beginPath(); ctx.moveTo(-r * 0.16, r * 1.1); ctx.lineTo(0, L); ctx.lineTo(r * 0.16, r * 1.1); ctx.fill();
+  }
+  ctx.rotate(-t * 0.35);
+  ctx.fillStyle = '#ffcf26';
+  ctx.beginPath(); ctx.arc(0, 0, r, 0, TAU); ctx.fill();
+  // visage souriant
+  ctx.fillStyle = '#a0522d';
+  ctx.beginPath(); ctx.arc(-r * 0.32, -r * 0.15, r * 0.09, 0, TAU); ctx.arc(r * 0.32, -r * 0.15, r * 0.09, 0, TAU); ctx.fill();
+  ctx.strokeStyle = '#a0522d'; ctx.lineWidth = r * 0.07; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.arc(0, r * 0.05, r * 0.4, 0.2 * Math.PI, 0.8 * Math.PI); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,120,90,0.35)';
+  ctx.beginPath(); ctx.arc(-r * 0.55, r * 0.2, r * 0.13, 0, TAU); ctx.arc(r * 0.55, r * 0.2, r * 0.13, 0, TAU); ctx.fill();
+  ctx.restore();
+}
+function cloud(x, y, s, color = '#ffffff') {
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(-50, 10, 32, 0, TAU); ctx.arc(-15, -12, 42, 0, TAU);
+  ctx.arc(28, -2, 36, 0, TAU); ctx.arc(60, 14, 26, 0, TAU);
+  ctx.rect(-50, 10, 110, 30);
+  ctx.fill();
+  ctx.restore();
+}
+function drifting(t, speed, x0, span = W + 400) { return ((x0 + t * speed) % span + span) % span - 200; }
+
+function hills(y, colors, t = 0) {
+  ctx.fillStyle = colors[0];
+  ctx.beginPath(); ctx.moveTo(0, H);
+  for (let x = 0; x <= W; x += 20) ctx.lineTo(x, y - 40 + 30 * Math.sin(x / 210 + 1.3));
+  ctx.lineTo(W, H); ctx.fill();
+  ctx.fillStyle = colors[1];
+  ctx.beginPath(); ctx.moveTo(0, H);
+  for (let x = 0; x <= W; x += 20) ctx.lineTo(x, y + 20 * Math.sin(x / 160));
+  ctx.lineTo(W, H); ctx.fill();
+}
+function flowers(y, n, t, seed = 1) {
+  for (let i = 0; i < n; i++) {
+    const x = 40 + rnd(i + seed) * (W - 80);
+    const yy = y + 20 * Math.sin(x / 160) + 15 + rnd(i * 3 + seed) * 120;
+    const sw = Math.sin(t * 2 + i) * 3;
+    ctx.strokeStyle = '#2e7d32'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(x, yy); ctx.lineTo(x + sw, yy - 18); ctx.stroke();
+    ctx.fillStyle = ['#ff6b8b', '#ffd23f', '#ffffff', '#b388ff'][i % 4];
+    for (let p = 0; p < 5; p++) {
+      const a = p / 5 * TAU;
+      ctx.beginPath(); ctx.arc(x + sw + Math.cos(a) * 6, yy - 18 + Math.sin(a) * 6, 5, 0, TAU); ctx.fill();
+    }
+    ctx.fillStyle = '#ff9800'; ctx.beginPath(); ctx.arc(x + sw, yy - 18, 4, 0, TAU); ctx.fill();
+  }
+}
+
+// mer : couches de vagues animées
+function sea(y, t, opt = {}) {
+  const amp = opt.amp ?? 8, speed = opt.speed ?? 1, cols = opt.colors ?? ['#4fa3e0', '#2f80c8', '#1f63a8'];
+  cols.forEach((c, k) => {
+    const yy = y + k * (opt.gap ?? 26);
+    const a = amp * (1 + k * 0.35);
+    ctx.fillStyle = c;
+    ctx.beginPath(); ctx.moveTo(0, H);
+    for (let x = 0; x <= W + 10; x += 10) {
+      ctx.lineTo(x, yy + a * Math.sin(x / (70 + k * 25) + t * speed * (1.6 + k * 0.5) + k * 2)
+                    + a * 0.5 * Math.sin(x / 33 - t * speed * 2.1 + k));
+    }
+    ctx.lineTo(W, H); ctx.closePath(); ctx.fill();
+    if (opt.foam) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = 3;
+      ctx.beginPath();
+      for (let x = 0; x <= W + 10; x += 10) {
+        const v = yy + a * Math.sin(x / (70 + k * 25) + t * speed * (1.6 + k * 0.5) + k * 2) + a * 0.5 * Math.sin(x / 33 - t * speed * 2.1 + k);
+        x === 0 ? ctx.moveTo(x, v) : ctx.lineTo(x, v);
+      }
+      ctx.stroke();
+    }
+  });
+}
+function waveY(x, y, t, amp, speed) { // hauteur de la 1re couche de vagues
+  return y + amp * Math.sin(x / 70 + t * speed * 1.6) + amp * 0.5 * Math.sin(x / 33 - t * speed * 2.1);
+}
+
+function boat(x, y, angle, s = 1, opt = {}) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(angle); ctx.scale(s * (opt.flip ? -1 : 1), s);
+  // mât + voile
+  ctx.fillStyle = '#6d4c41'; ctx.fillRect(-4, -170, 8, 170);
+  ctx.fillStyle = opt.sail ?? '#fff7e0';
+  ctx.beginPath(); ctx.moveTo(6, -160); ctx.quadraticCurveTo(95, -100, 70, -30); ctx.lineTo(6, -30); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = '#d7c7a0'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.fillStyle = '#e53935'; // fanion
+  ctx.beginPath(); ctx.moveTo(4, -170); ctx.lineTo(-30, -160 + Math.sin((opt.t ?? 0) * 8) * 3); ctx.lineTo(4, -152); ctx.fill();
+  if (opt.passenger) opt.passenger();
+  // coque
+  ctx.fillStyle = '#8d5524';
+  ctx.beginPath(); ctx.moveTo(-130, -30); ctx.lineTo(130, -30); ctx.quadraticCurveTo(110, 30, 70, 32);
+  ctx.lineTo(-70, 32); ctx.quadraticCurveTo(-110, 30, -130, -30); ctx.fill();
+  ctx.fillStyle = '#a0692f'; ctx.fillRect(-122, -30, 244, 10);
+  ctx.fillStyle = '#5d3a17';
+  for (let i = -2; i <= 2; i++) { ctx.beginPath(); ctx.arc(i * 42, 2, 7, 0, TAU); ctx.fill(); }
+  ctx.restore();
+}
+
+// ---------- Jonas ----------
+// origine aux pieds ; pose: stand | scared | pray | walk | up | fall | happy
+function jonas(x, y, s, t, opt = {}) {
+  const pose = opt.pose ?? 'stand';
+  ctx.save(); ctx.translate(x, y); ctx.scale(s * (opt.facing ?? 1), s);
+  if (opt.rot) ctx.rotate(opt.rot);
+  if (pose === 'scared') ctx.translate(Math.sin(t * 60) * 1.6, 0);
+  const walk = pose === 'walk' ? Math.sin(t * 9) : 0;
+  const bob = pose === 'walk' ? -Math.abs(Math.sin(t * 9)) * 4 : (pose === 'happy' ? -Math.abs(Math.sin(t * 6)) * 14 : 0);
+  ctx.translate(0, bob);
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  const skin = '#f2c28f', robe = '#e8892b', robeDark = '#c66a14';
+
+  if (pose === 'pray') {
+    // à genoux
+    ctx.fillStyle = robeDark;
+    ctx.beginPath(); ctx.ellipse(0, -14, 34, 16, 0, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#6d4c41';
+    ctx.beginPath(); ctx.ellipse(-30, -6, 12, 7, 0, 0, TAU); ctx.fill();
+  } else {
+    // jambes
+    ctx.strokeStyle = skin; ctx.lineWidth = 9;
+    ctx.beginPath(); ctx.moveTo(-8, -38); ctx.lineTo(-8 + walk * 12, -4);
+    ctx.moveTo(8, -38); ctx.lineTo(8 - walk * 12, -4); ctx.stroke();
+    ctx.fillStyle = '#6d4c41';
+    ctx.beginPath(); ctx.ellipse(-6 + walk * 12, -3, 10, 5, 0, 0, TAU); ctx.ellipse(10 - walk * 12, -3, 10, 5, 0, 0, TAU); ctx.fill();
+  }
+  const base = pose === 'pray' ? -20 : -32;
+  // robe
+  ctx.fillStyle = robe;
+  ctx.beginPath(); ctx.moveTo(-17, base - 62); ctx.lineTo(17, base - 62); ctx.lineTo(29, base); ctx.lineTo(-29, base); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = robeDark; ctx.fillRect(-23, base - 32, 46, 7); // ceinture
+  // bras
+  ctx.strokeStyle = robe; ctx.lineWidth = 10;
+  const sh = base - 56;
+  const hand = (hx, hy) => { ctx.fillStyle = skin; ctx.beginPath(); ctx.arc(hx, hy, 6.5, 0, TAU); ctx.fill(); };
+  if (pose === 'pray') {
+    ctx.beginPath(); ctx.moveTo(-14, sh); ctx.lineTo(-20, sh + 34); ctx.lineTo(-4, sh + 32); ctx.moveTo(14, sh); ctx.lineTo(20, sh + 34); ctx.lineTo(4, sh + 32); ctx.stroke();
+    ctx.fillStyle = skin;
+    ctx.beginPath(); ctx.moveTo(-7, sh + 36); ctx.quadraticCurveTo(-8, sh + 14, 0, sh + 4); ctx.quadraticCurveTo(8, sh + 14, 7, sh + 36); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = '#d9a46e'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(0, sh + 8); ctx.lineTo(0, sh + 34); ctx.stroke();
+  } else if (pose === 'scared') {
+    ctx.beginPath(); ctx.moveTo(-14, sh); ctx.lineTo(-26, sh - 12); ctx.lineTo(-14, sh - 30); ctx.moveTo(14, sh); ctx.lineTo(26, sh - 12); ctx.lineTo(14, sh - 30); ctx.stroke();
+    hand(-13, sh - 32); hand(13, sh - 32);
+  } else if (pose === 'up' || pose === 'fall' || pose === 'happy') {
+    const w = pose === 'fall' ? Math.sin(t * 14) * 10 : (pose === 'happy' ? Math.sin(t * 6) * 6 : 0);
+    ctx.beginPath(); ctx.moveTo(-14, sh); ctx.lineTo(-32, sh - 30 + w); ctx.moveTo(14, sh); ctx.lineTo(32, sh - 30 - w); ctx.stroke();
+    hand(-33, sh - 32 + w); hand(33, sh - 32 - w);
+  } else {
+    const a = walk * 10;
+    ctx.beginPath(); ctx.moveTo(-14, sh); ctx.lineTo(-20 - a, sh + 34); ctx.moveTo(14, sh); ctx.lineTo(20 + a, sh + 34); ctx.stroke();
+    hand(-20 - a, sh + 36); hand(20 + a, sh + 36);
+  }
+  // tête
+  const hy = base - 84;
+  ctx.fillStyle = skin; ctx.beginPath(); ctx.arc(0, hy, 22, 0, TAU); ctx.fill();
+  // cheveux + barbe
+  ctx.fillStyle = '#5d3a1a';
+  ctx.beginPath(); ctx.arc(0, hy - 3, 23, Math.PI * 1.02, Math.PI * 1.98); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(-20, hy + 2); ctx.quadraticCurveTo(-18, hy + 30, 0, hy + 32); ctx.quadraticCurveTo(18, hy + 30, 20, hy + 2);
+  ctx.quadraticCurveTo(10, hy + 14, 0, hy + 14); ctx.quadraticCurveTo(-10, hy + 14, -20, hy + 2); ctx.fill();
+  // visage (regard vers la droite par défaut)
+  const look = opt.look ?? 0;          // -1 haut, 0 normal
+  const ey = hy - 4 + look * 3, ex = 4;
+  if (opt.eyesClosed) {
+    ctx.strokeStyle = '#3e2723'; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(-8 + ex, ey, 4, 0.1 * Math.PI, 0.9 * Math.PI); ctx.moveTo(12 + ex, ey); ctx.arc(8 + ex, ey, 4, 0.1 * Math.PI, 0.9 * Math.PI); ctx.stroke();
+  } else if (pose === 'scared' || pose === 'fall') {
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(-8 + ex, ey, 6, 0, TAU); ctx.arc(8 + ex, ey, 6, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#3e2723';
+    ctx.beginPath(); ctx.arc(-8 + ex, ey, 2.3, 0, TAU); ctx.arc(8 + ex, ey, 2.3, 0, TAU); ctx.fill();
+  } else {
+    ctx.fillStyle = '#3e2723';
+    ctx.beginPath(); ctx.arc(-8 + ex, ey, 3.2, 0, TAU); ctx.arc(8 + ex, ey, 3.2, 0, TAU); ctx.fill();
+  }
+  // bouche
+  ctx.strokeStyle = '#7a2e1f'; ctx.lineWidth = 2.5;
+  if (pose === 'scared' || pose === 'fall') {
+    ctx.fillStyle = '#7a2e1f'; ctx.beginPath(); ctx.ellipse(ex, hy + 9, 4, 5.5, 0, 0, TAU); ctx.fill();
+  } else if (pose !== 'pray') {
+    ctx.beginPath(); ctx.arc(ex, hy + 4, 7, 0.2 * Math.PI, 0.8 * Math.PI); ctx.stroke();
+  }
+  // joues
+  ctx.fillStyle = 'rgba(255,110,90,0.35)';
+  ctx.beginPath(); ctx.arc(-14 + ex, hy + 4, 4, 0, TAU); ctx.arc(14 + ex, hy + 4, 4, 0, TAU); ctx.fill();
+  // goutte de sueur
+  if (pose === 'scared') {
+    const d = (t * 1.5) % 1;
+    ctx.fillStyle = `rgba(120,200,255,${1 - d})`;
+    ctx.beginPath(); ctx.moveTo(-24, hy - 14 + d * 20); ctx.quadraticCurveTo(-30, hy - 2 + d * 20, -24, hy + d * 20); ctx.quadraticCurveTo(-18, hy - 2 + d * 20, -24, hy - 14 + d * 20); ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ---------- le gros poisson ----------
+function fish(x, y, s, t, opt = {}) {
+  const mouth = opt.mouth ?? 0.15;   // 0 fermé .. 1 grand ouvert
+  ctx.save(); ctx.translate(x, y); ctx.scale(s * (opt.flip ? -1 : 1), s); ctx.rotate(opt.rot ?? 0);
+  const tail = Math.sin(t * 6) * 0.25;
+  // queue (à droite) — le poisson regarde à gauche
+  ctx.save(); ctx.translate(150, 0); ctx.rotate(tail);
+  ctx.fillStyle = '#3d6fb6';
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.quadraticCurveTo(60, -30, 95, -80); ctx.quadraticCurveTo(70, 0, 95, 80); ctx.quadraticCurveTo(60, 30, 0, 0); ctx.fill();
+  ctx.restore();
+  // nageoire dorsale
+  ctx.fillStyle = '#3d6fb6';
+  ctx.beginPath(); ctx.moveTo(-20, -82); ctx.quadraticCurveTo(40, -150, 90, -70); ctx.fill();
+  // corps : mâchoire supérieure et inférieure
+  const m = mouth * 0.5;
+  ctx.fillStyle = '#5b8fd9';
+  ctx.beginPath();
+  ctx.moveTo(-165, -6);
+  ctx.quadraticCurveTo(-150, -100, 20, -95);
+  ctx.quadraticCurveTo(170, -80, 170, 0);
+  ctx.quadraticCurveTo(170, 80, 20, 95);
+  ctx.quadraticCurveTo(-150, 100, -165, 6);
+  ctx.closePath(); ctx.fill();
+  // ventre clair
+  ctx.fillStyle = '#cfe3ff';
+  ctx.beginPath(); ctx.moveTo(-150, 20); ctx.quadraticCurveTo(0, 120, 150, 30); ctx.quadraticCurveTo(0, 70, -150, 20); ctx.fill();
+  // bouche ouverte (découpe triangulaire)
+  if (mouth > 0.02) {
+    const up = -70 * m - 4, dn = 70 * m + 4;
+    ctx.fillStyle = '#5b1630';
+    ctx.beginPath(); ctx.moveTo(-160, up); ctx.quadraticCurveTo(-90, up * 0.4, -50, 0); ctx.quadraticCurveTo(-90, dn * 0.4, -160, dn); ctx.quadraticCurveTo(-175, 0, -160, up); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#ff6f91';
+    ctx.beginPath(); ctx.ellipse(-105, dn * 0.45, 38, 6 + 10 * m, 0, 0, TAU); ctx.fill();
+    ctx.strokeStyle = '#3d6fb6'; ctx.lineWidth = 10; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(-160, up); ctx.quadraticCurveTo(-90, up * 0.4, -50, 0); ctx.quadraticCurveTo(-90, dn * 0.4, -160, dn); ctx.stroke();
+    ctx.fillStyle = '#fff';
+    for (let k = 0; k < 4; k++) {
+      const u = 0.15 + k * 0.2, tx = lerp(-160, -60, u);
+      const ty1 = up * (1 - u) * 0.95, ty2 = dn * (1 - u) * 0.95;
+      ctx.beginPath(); ctx.moveTo(tx - 6, ty1); ctx.lineTo(tx + 6, ty1); ctx.lineTo(tx, ty1 + 10); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(tx - 6, ty2); ctx.lineTo(tx + 6, ty2); ctx.lineTo(tx, ty2 - 10); ctx.fill();
+    }
+  } else {
+    ctx.strokeStyle = '#2a4f86'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(-165, 2); ctx.quadraticCurveTo(-130, 18, -100, 8); ctx.stroke();
+  }
+  // nageoire latérale
+  ctx.fillStyle = '#3d6fb6';
+  ctx.save(); ctx.translate(20, 30); ctx.rotate(0.4 + Math.sin(t * 5) * 0.2);
+  ctx.beginPath(); ctx.ellipse(25, 0, 30, 13, 0, 0, TAU); ctx.fill(); ctx.restore();
+  // œil
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(-85, -42, 17, 0, TAU); ctx.fill();
+  ctx.fillStyle = '#1b2a41'; ctx.beginPath(); ctx.arc(-90, -42, 8, 0, TAU); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(-93, -46, 3, 0, TAU); ctx.fill();
+  // écailles
+  ctx.strokeStyle = 'rgba(255,255,255,0.25)'; ctx.lineWidth = 3;
+  for (let i = 0; i < 4; i++) for (let j = -1; j <= 1; j++) {
+    ctx.beginPath(); ctx.arc(10 + i * 32, j * 30 - 10, 14, -0.5 * Math.PI, 0.5 * Math.PI); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function bubbles(t, x0, y0, n, seed, spread = 60) {
+  for (let i = 0; i < n; i++) {
+    const ph = (t * (0.5 + rnd(i + seed) * 0.4) + rnd(i * 7 + seed)) % 1;
+    const bx = x0 + (rnd(i * 3 + seed) - 0.5) * spread + Math.sin(t * 3 + i) * 8;
+    const by = y0 - ph * 220;
+    ctx.strokeStyle = `rgba(255,255,255,${0.8 * (1 - ph)})`; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(bx, by, 5 + rnd(i + seed * 2) * 9, 0, TAU); ctx.stroke();
+  }
+}
+
+function heart(x, y, s, color) {
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(0, 8);
+  ctx.bezierCurveTo(-22, -6, -12, -26, 0, -14);
+  ctx.bezierCurveTo(12, -26, 22, -6, 0, 8);
+  ctx.fill();
+  ctx.restore();
+}
+
+// ville de Ninive
+function city(x, y, s, t, festive = false) {
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
+  const B = [[-260, 120, 150, '#e0b973'], [-150, 90, 210, '#d9a55b'], [-60, 110, 170, '#ecc68a'],
+             [50, 80, 240, '#d69a4c'], [130, 120, 150, '#e6b56e'], [240, 100, 190, '#dca863']];
+  // remparts
+  ctx.fillStyle = '#c48b45'; ctx.fillRect(-300, -70, 660, 70);
+  for (let i = -300; i < 360; i += 30) ctx.fillRect(i, -86, 18, 16);
+  B.forEach(([bx, bw, bh, c], i) => {
+    ctx.fillStyle = c; ctx.fillRect(bx, -bh, bw, bh);
+    if (i % 2 === 0) { // dôme
+      ctx.fillStyle = festive ? ['#ff6b8b', '#4fc3f7', '#ffd23f'][i % 3] : '#2f80c8';
+      ctx.beginPath(); ctx.arc(bx + bw / 2, -bh, bw * 0.38, Math.PI, 0); ctx.fill();
+    } else {
+      ctx.fillStyle = '#a8742f'; for (let k = 0; k < bw; k += 20) ctx.fillRect(bx + k, -bh - 12, 12, 12);
+    }
+    ctx.fillStyle = festive ? '#ffe9a6' : '#6b4a22';
+    for (let wy = -bh + 30; wy < -40; wy += 42) for (let wx = bx + 18; wx < bx + bw - 22; wx += 34) {
+      rrect(wx, wy, 16, 22, 8); ctx.fill();
+    }
+  });
+  // porte
+  ctx.fillStyle = '#5d3a17'; ctx.beginPath(); ctx.moveTo(10, 0); ctx.lineTo(10, -40); ctx.arc(40, -40, 30, Math.PI, 0); ctx.lineTo(70, 0); ctx.fill();
+  if (festive) {
+    // guirlandes de fanions
+    const lines = [[-300, -86, 360, -86], [-150, -210, 50, -240], [-60, -170, 130, -150]];
+    lines.forEach(([x1, y1, x2, y2], li) => {
+      const n = 12;
+      ctx.strokeStyle = '#7b5'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.quadraticCurveTo((x1 + x2) / 2, (y1 + y2) / 2 + 40, x2, y2); ctx.stroke();
+      for (let k = 1; k < n; k++) {
+        const u = k / n;
+        const px = (1 - u) * (1 - u) * x1 + 2 * u * (1 - u) * (x1 + x2) / 2 + u * u * x2;
+        const py = (1 - u) * (1 - u) * y1 + 2 * u * (1 - u) * ((y1 + y2) / 2 + 40) + u * u * y2;
+        ctx.fillStyle = ['#e53935', '#ffd23f', '#43a047', '#1e88e5', '#ab47bc'][(k + li) % 5];
+        const sw = Math.sin(t * 4 + k) * 3;
+        ctx.beginPath(); ctx.moveTo(px - 8, py); ctx.lineTo(px + 8, py); ctx.lineTo(px + sw, py + 20); ctx.fill();
+      }
+    });
+  }
+  ctx.restore();
+}
+
+// petits habitants
+function villager(x, y, s, t, i) {
+  ctx.save(); ctx.translate(x, y - Math.abs(Math.sin(t * 5 + i * 1.7)) * 22 * s); ctx.scale(s, s);
+  const col = ['#7e57c2', '#26a69a', '#ef5350', '#42a5f5', '#ffa726', '#ec407a'][i % 6];
+  const skin = ['#f2c28f', '#c68642', '#8d5524', '#e0ac69'][i % 4];
+  ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(-14, -60); ctx.lineTo(14, -60); ctx.lineTo(22, 0); ctx.lineTo(-22, 0); ctx.fill();
+  ctx.strokeStyle = col; ctx.lineWidth = 8; ctx.lineCap = 'round';
+  const w = Math.sin(t * 8 + i) * 8;
+  ctx.beginPath(); ctx.moveTo(-12, -54); ctx.lineTo(-26, -82 + w); ctx.moveTo(12, -54); ctx.lineTo(26, -82 - w); ctx.stroke();
+  ctx.fillStyle = skin; ctx.beginPath(); ctx.arc(0, -76, 16, 0, TAU); ctx.fill();
+  ctx.fillStyle = '#3e2723'; ctx.beginPath(); ctx.arc(-5, -78, 2.4, 0, TAU); ctx.arc(5, -78, 2.4, 0, TAU); ctx.fill();
+  ctx.strokeStyle = '#3e2723'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(0, -73, 6, 0.15 * Math.PI, 0.85 * Math.PI); ctx.stroke();
+  ctx.restore();
+}
+
+// ---------- textes ----------
+function wrapLines(text, maxW) {
+  const words = text.split(' '); const lines = []; let cur = '';
+  words.forEach(w => { const test = cur ? cur + ' ' + w : w; if (ctx.measureText(test).width > maxW && cur) { lines.push(cur); cur = w; } else cur = test; });
+  if (cur) lines.push(cur);
+  return lines;
+}
+function caption(text, lt, opt = {}) {
+  const a = easeOut(prog(lt, 0.5, 1.2)) * (1 - prog(lt, 7.5, 7.95));
+  if (a <= 0) return;
+  const size = opt.size ?? 46;
+  ctx.save();
+  ctx.globalAlpha = a;
+  ctx.font = `bold ${size}px ${FONT}`;
+  const lines = wrapLines(text, W - 200);
+  const lh = size * 1.25;
+  const tw = Math.max(...lines.map(l => ctx.measureText(l).width));
+  const bw = tw + 70, bh = lines.length * lh + 34;
+  const by = (opt.y ?? H - 40) - bh + (1 - easeOut(prog(lt, 0.5, 1.2))) * 30;
+  const bx = (W - bw) / 2;
+  ctx.shadowColor = 'rgba(0,0,0,0.3)'; ctx.shadowBlur = 16; ctx.shadowOffsetY = 5;
+  ctx.fillStyle = opt.bg ?? 'rgba(255,255,255,0.93)';
+  rrect(bx, by, bw, bh, 26); ctx.fill();
+  ctx.shadowColor = 'transparent';
+  ctx.strokeStyle = opt.border ?? '#ffb703'; ctx.lineWidth = 5; ctx.stroke();
+  ctx.fillStyle = opt.color ?? '#23395b';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  lines.forEach((l, i) => ctx.fillText(l, W / 2, by + 17 + lh * (i + 0.5)));
+  ctx.restore();
+}
+
+// =========================== SCÈNES ===========================
+const scenes = [];
+
+// 1 — Ciel bleu, soleil, titre
+scenes.push(lt => {
+  sky('#4aa8ff', '#bfe6ff');
+  cloud(drifting(lt, 25, 150), 130, 1.1); cloud(drifting(lt, 15, 700), 210, 0.8); cloud(drifting(lt, 20, 1200), 90, 0.7);
+  sun(1060, 150 - easeOut(prog(lt, 0, 2)) * 40 + 40, 70, lt);
+  hills(560, ['#8bd16b', '#5cb85c']);
+  flowers(560, 14, lt, 3);
+  // oiseaux
+  ctx.strokeStyle = '#2d3a4a'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+  for (let i = 0; i < 3; i++) {
+    const bx = drifting(lt, 60, 100 + i * 90), by = 250 + i * 25 + Math.sin(lt * 2 + i) * 10, f = Math.sin(lt * 10 + i) * 6;
+    ctx.beginPath(); ctx.moveTo(bx - 14, by - f); ctx.quadraticCurveTo(bx - 6, by - 8, bx, by); ctx.quadraticCurveTo(bx + 6, by - 8, bx + 14, by - f); ctx.stroke();
+  }
+  // titre
+  const k = easeOut(prog(lt, 0.4, 1.6));
+  const pop = 1 + 0.08 * Math.sin(prog(lt, 0.4, 1.6) * Math.PI);
+  ctx.save();
+  ctx.globalAlpha = k * (1 - prog(lt, 7.5, 7.95));
+  ctx.translate(W / 2, 300); ctx.scale(pop * (0.6 + 0.4 * k), pop * (0.6 + 0.4 * k));
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.font = `bold 120px ${FONT}`;
+  ctx.lineWidth = 16; ctx.strokeStyle = '#1d3557'; ctx.lineJoin = 'round';
+  ctx.strokeText('Jonas', 0, -60);
+  ctx.fillStyle = '#ffd23f'; ctx.fillText('Jonas', 0, -60);
+  const k2 = easeOut(prog(lt, 1.4, 2.4));
+  ctx.globalAlpha *= k2;
+  ctx.font = `bold 52px ${FONT}`;
+  ctx.lineWidth = 10; ctx.strokeText('obéir même quand c\'est difficile', 0, 50 + (1 - k2) * 20);
+  ctx.fillStyle = '#ffffff'; ctx.fillText('obéir même quand c\'est difficile', 0, 50 + (1 - k2) * 20);
+  ctx.restore();
+});
+
+// 2 — Dieu parle, rayons de lumière
+scenes.push(lt => {
+  sky('#5fb4ff', '#d8f0ff');
+  cloud(drifting(lt, 12, 900), 120, 0.9);
+  hills(540, ['#8bd16b', '#5cb85c']);
+  flowers(540, 10, lt, 9);
+  // rayons de lumière depuis le haut
+  const pulse = 0.75 + 0.25 * Math.sin(lt * 3);
+  const on = easeOut(prog(lt, 0.2, 1.5));
+  ctx.save();
+  ctx.globalAlpha = on;
+  ctx.translate(560, -40);
+  for (let i = 0; i < 9; i++) {
+    const a = -0.42 + i * 0.105 + Math.sin(lt * 0.8 + i) * 0.02;
+    ctx.save(); ctx.rotate(a);
+    const g = ctx.createLinearGradient(0, 0, 0, 700);
+    g.addColorStop(0, `rgba(255,248,200,${0.75 * pulse})`); g.addColorStop(1, 'rgba(255,248,200,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.moveTo(-10, 0); ctx.lineTo(10, 0); ctx.lineTo(48, 720); ctx.lineTo(-48, 720); ctx.fill();
+    ctx.restore();
+  }
+  const core = ctx.createRadialGradient(0, 40, 10, 0, 40, 220);
+  core.addColorStop(0, 'rgba(255,255,230,1)'); core.addColorStop(1, 'rgba(255,255,230,0)');
+  ctx.fillStyle = core; ctx.beginPath(); ctx.arc(0, 40, 220, 0, TAU); ctx.fill();
+  ctx.restore();
+  // halo au sol autour de Jonas
+  ctx.fillStyle = `rgba(255,250,200,${0.5 * on * pulse})`;
+  ctx.beginPath(); ctx.ellipse(560, 566, 110, 22, 0, 0, TAU); ctx.fill();
+  // étincelles
+  for (let i = 0; i < 18; i++) {
+    const ph = (lt * 0.35 + rnd(i + 40)) % 1;
+    const sx = 560 + (rnd(i + 80) - 0.5) * 360, sy = 80 + ph * 460;
+    ctx.fillStyle = `rgba(255,255,255,${on * Math.sin(ph * Math.PI)})`;
+    ctx.beginPath(); ctx.arc(sx, sy, 3 + rnd(i) * 3, 0, TAU); ctx.fill();
+  }
+  // Jonas regarde vers le haut, étonné
+  const lookUp = prog(lt, 1, 2);
+  jonas(560, 566, 1.5, lt, { pose: lt > 2.4 ? 'up' : 'stand', look: -lookUp });
+  // bulle « !»
+  if (lt > 1.6) {
+    const k = easeOut(prog(lt, 1.6, 2.1));
+    ctx.save(); ctx.translate(640, 330); ctx.scale(k, k);
+    ctx.font = `bold 60px ${FONT}`; ctx.fillStyle = '#e63946'; ctx.textAlign = 'center';
+    ctx.fillText('!', 0, 0); ctx.restore();
+  }
+  // panneau vers Ninive
+  ctx.save(); ctx.translate(1040, 560);
+  ctx.fillStyle = '#6d4c41'; ctx.fillRect(-6, -130, 12, 130);
+  ctx.fillStyle = '#c98b4a'; ctx.beginPath(); ctx.moveTo(-80, -140); ctx.lineTo(70, -140); ctx.lineTo(100, -115); ctx.lineTo(70, -90); ctx.lineTo(-80, -90); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.font = `bold 26px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('Ninive', 5, -115);
+  ctx.restore();
+  caption('Dieu dit : « Va à Ninive ! »', lt, { y: 200, size: 50 });
+});
+
+// 3 — Jonas a peur et s'enfuit en bateau dans l'autre sens
+scenes.push(lt => {
+  sky('#7cc4ff', '#e4f5ff');
+  sun(1120, 110, 45, lt);
+  cloud(drifting(lt, 18, 300), 120, 0.8);
+  // panneau Ninive à droite
+  ctx.fillStyle = '#e8d29a'; ctx.fillRect(900, 420, 380, 60);
+  ctx.save(); ctx.translate(1180, 430);
+  ctx.fillStyle = '#6d4c41'; ctx.fillRect(-5, -110, 10, 110);
+  ctx.fillStyle = '#c98b4a'; ctx.beginPath(); ctx.moveTo(-70, -120); ctx.lineTo(60, -120); ctx.lineTo(85, -97); ctx.lineTo(60, -74); ctx.lineTo(-70, -74); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.font = `bold 22px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('Ninive', 5, -97);
+  ctx.restore();
+  // quai
+  ctx.fillStyle = '#8d6e63'; ctx.fillRect(820, 440, 460, 26);
+  ctx.fillStyle = '#6d4c41'; for (let px = 840; px < 1280; px += 70) ctx.fillRect(px, 466, 14, 90);
+  const sail = easeOut(prog(lt, 3.2, 8));
+  const bx = 700 - sail * 760;
+  const sway = Math.sin(lt * 1.6) * 0.04;
+  // Jonas : tremble sur le quai, puis saute dans le bateau
+  const jump = prog(lt, 2.2, 3.0);
+  const onBoat = lt >= 3.0;
+  sea(470, lt, { amp: 6, colors: ['#5fb0ea', '#3c8fd6', '#2a72b8'] });
+  boat(bx, waveY(bx, 470, lt, 6, 1) + 10, sway, 0.95, {
+    t: lt, flip: true,
+    passenger: onBoat ? () => jonas(10, -30, 0.9, lt, { pose: 'scared', facing: 1 }) : null
+  });
+  if (!onBoat) {
+    const jx = lerp(900, bx + 10, ease(jump));
+    const jy = lerp(440, 450, jump) - Math.sin(jump * Math.PI) * 90;
+    const pose = jump > 0 ? 'scared' : (lt < 1.8 ? 'scared' : 'walk');
+    jonas(jx, jy, 0.86 * (jump > 0 ? 1 : 1), lt, { pose, facing: -1 });
+  }
+  // flèche « sens opposé »
+  if (lt > 3.6) {
+    const k = easeOut(prog(lt, 3.6, 4.4));
+    ctx.save(); ctx.globalAlpha = k;
+    ctx.strokeStyle = '#e63946'; ctx.fillStyle = '#e63946'; ctx.lineWidth = 10; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(760, 300); ctx.lineTo(760 - 220 * k, 300); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(760 - 220 * k - 30, 300); ctx.lineTo(760 - 220 * k + 4, 278); ctx.lineTo(760 - 220 * k + 4, 322); ctx.fill();
+    ctx.restore();
+  }
+  // "!!" de peur
+  if (lt < 3) {
+    ctx.font = `bold 44px ${FONT}`; ctx.fillStyle = '#e63946'; ctx.textAlign = 'center';
+    ctx.globalAlpha = 0.6 + 0.4 * Math.sin(lt * 10);
+    ctx.fillText('?!', lt < 2.2 ? 930 : lerp(930, bx + 40, jump), 300);
+    ctx.globalAlpha = 1;
+  }
+  caption('Jonas désobéit et s\'enfuit.', lt, { y: 170 });
+});
+
+// 4 — Tempête
+function storm(lt, intensity = 1, seedT = 0) {
+  sky('#2b3147', '#5a6378');
+  // éclairs
+  const flashT = [1.3, 4.1, 6.2];
+  let flash = 0;
+  flashT.forEach(f => { const d = lt - f; if (d > 0 && d < 0.35) flash = Math.max(flash, (1 - d / 0.35) * (d < 0.08 || (d > 0.14 && d < 0.2) ? 1 : 0.4)); });
+  // nuages sombres
+  for (let i = 0; i < 7; i++) cloud(drifting(lt, 40 + i * 8, i * 230), 60 + (i % 3) * 40, 1.5, i % 2 ? '#3d4459' : '#474f66');
+  if (flash > 0) {
+    ctx.strokeStyle = `rgba(255,250,200,${flash})`; ctx.lineWidth = 6; ctx.lineJoin = 'miter';
+    const fx = 300 + (Math.floor(lt / 2) % 3) * 280;
+    ctx.beginPath(); ctx.moveTo(fx, 80); ctx.lineTo(fx - 30, 170); ctx.lineTo(fx + 10, 170); ctx.lineTo(fx - 40, 290); ctx.stroke();
+  }
+  return flash;
+}
+function rain(lt, n = 140, alpha = 0.55) {
+  ctx.strokeStyle = `rgba(200,220,255,${alpha})`; ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const sp = 700 + rnd(i) * 400;
+    const x = (rnd(i * 2.3) * (W + 300) - lt * 180) % (W + 300);
+    const xx = x < 0 ? x + W + 300 : x;
+    const y = (rnd(i * 5.1) * H + lt * sp) % H;
+    ctx.moveTo(xx, y); ctx.lineTo(xx - 10, y + 26);
+  }
+  ctx.stroke();
+}
+scenes.push(lt => {
+  const flash = storm(lt);
+  const bx = 640 + Math.sin(lt * 0.9) * 40;
+  const by = waveY(bx, 460, lt, 30, 1.3) + 20;
+  const rock = Math.sin(lt * 2.4) * 0.28;
+  sea(420, lt, { amp: 30, speed: 1.3, colors: ['#2b5d8a'], foam: true });
+  boat(bx, by, rock, 1, { t: lt, flip: true, sail: '#e8dcc0',
+    passenger: () => jonas(-20, -30, 0.9, lt, { pose: 'scared', facing: 1 }) });
+  sea(470, lt + 2, { amp: 34, speed: 1.3, colors: ['#1f4f7a', '#173f63'], gap: 60, foam: true });
+  // embruns
+  for (let i = 0; i < 20; i++) {
+    const ph = (lt * 1.2 + rnd(i + 20)) % 1;
+    ctx.fillStyle = `rgba(255,255,255,${0.7 * (1 - ph)})`;
+    ctx.beginPath(); ctx.arc(bx + (rnd(i) - 0.5) * 400, by + 20 - Math.sin(ph * Math.PI) * 80, 4, 0, TAU); ctx.fill();
+  }
+  rain(lt);
+  if (flash > 0) { ctx.fillStyle = `rgba(255,255,255,${flash * 0.45})`; ctx.fillRect(0, 0, W, H); }
+  caption('Une grande tempête arrive !', lt, { y: 130, bg: 'rgba(255,255,255,0.95)', border: '#4cc9f0' });
+});
+
+// 5 — Jonas tombe à la mer, le poisson l'avale
+scenes.push(lt => {
+  storm(lt + 3, 0.6);
+  const calm = prog(lt, 4, 8);
+  const amp = lerp(26, 12, calm);
+  const bx = 360 - prog(lt, 2, 8) * 300;
+  const by = waveY(bx, 420, lt, amp, 1.2) + 20;
+  sea(400, lt, { amp, speed: 1.2, colors: ['#2b5d8a'], foam: true });
+  boat(bx, by, Math.sin(lt * 2.2) * 0.2, 0.85, { t: lt, flip: true, sail: '#e8dcc0' });
+  // trajectoire de la chute (0.4 → 2.0 s)
+  const f = prog(lt, 0.4, 2.0);
+  const jx = lerp(380, 700, f);
+  const jy = 360 - Math.sin(f * Math.PI * 0.9) * 140 + f * f * 160;
+  // poisson : arrive par la droite (1.6 → 4), ouvre la bouche, avale (~4.4), repart
+  const fin = easeOut(prog(lt, 1.6, 4.0));
+  const leave = ease(prog(lt, 5.4, 8));
+  const fx = lerp(1500, 1010, fin) + leave * 160;
+  const fy = 560 + Math.sin(lt * 2) * 8 + leave * 80;
+  const mouth = lt < 2.6 ? 0.2 : lt < 4.0 ? lerp(0.2, 1, prog(lt, 2.6, 3.6)) : lerp(1, 0, prog(lt, 4.3, 4.6));
+  const swallowed = lt >= 4.45;
+  // Jonas flotte dans l'eau en attendant
+  let px = jx, py = jy;
+  if (f >= 1) { px = 700 + Math.sin(lt * 3) * 6; py = 520 + Math.sin(lt * 4) * 6; }
+  const suck = prog(lt, 3.8, 4.45);
+  if (suck > 0) { px = lerp(700, fx - 150, ease(suck)); py = lerp(520, fy + 30, ease(suck)); }
+  if (!swallowed) jonas(px, py, 0.7 * (1 - suck * 0.4), lt, { pose: 'fall', rot: f < 1 ? f * 2.5 : 2.5 + Math.sin(lt * 2) * 0.2, facing: 1 });
+  // éclaboussures
+  const sp = prog(lt, 1.9, 2.8);
+  if (sp > 0 && sp < 1) {
+    for (let i = 0; i < 14; i++) {
+      const a = Math.PI + (i / 13) * Math.PI;
+      ctx.fillStyle = `rgba(255,255,255,${1 - sp})`;
+      ctx.beginPath(); ctx.arc(700 + Math.cos(a) * 90 * sp, 470 + Math.sin(a) * 90 * sp + sp * sp * 60, 7 * (1 - sp) + 2, 0, TAU); ctx.fill();
+    }
+  }
+  fish(fx, fy, 1.1, lt, { mouth });
+  if (swallowed && lt < 5.6) { // petit « gloups »
+    const k = easeOut(prog(lt, 4.45, 4.9));
+    ctx.save(); ctx.globalAlpha = 1 - prog(lt, 5.1, 5.6);
+    ctx.font = `bold 46px ${FONT}`; ctx.fillStyle = '#ffd23f'; ctx.strokeStyle = '#1d3557'; ctx.lineWidth = 8; ctx.textAlign = 'center';
+    ctx.translate(fx - 40, fy - 150); ctx.scale(k, k); ctx.strokeText('GLOUPS !', 0, 0); ctx.fillText('GLOUPS !', 0, 0); ctx.restore();
+  }
+  bubbles(lt, fx - 120, fy, 8, 5);
+  sea(520, lt + 1, { amp: amp * 0.6, speed: 1, colors: ['rgba(23,63,99,0.55)'] });
+  rain(lt, Math.round(lerp(120, 30, calm)), lerp(0.5, 0.2, calm));
+  caption('Un énorme poisson avale Jonas.', lt, { y: 130 });
+});
+
+// 6 — Dans le ventre du poisson, Jonas prie
+scenes.push(lt => {
+  const g = ctx.createRadialGradient(640, 400, 50, 640, 400, 760);
+  g.addColorStop(0, '#c2456a'); g.addColorStop(0.6, '#7a1f3d'); g.addColorStop(1, '#3a0c1e');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  // côtes / parois qui respirent
+  const br = 1 + Math.sin(lt * 1.5) * 0.03;
+  ctx.save(); ctx.translate(640, 380); ctx.scale(br, br);
+  ctx.strokeStyle = 'rgba(255,170,190,0.35)'; ctx.lineWidth = 18; ctx.lineCap = 'round';
+  for (let i = -4; i <= 4; i++) {
+    ctx.beginPath(); ctx.ellipse(i * 140, 0, 60, 420, 0, -0.6 * Math.PI, 0.6 * Math.PI); ctx.stroke();
+  }
+  ctx.restore();
+  // sol liquide
+  ctx.fillStyle = '#5a1430';
+  ctx.beginPath(); ctx.moveTo(0, H);
+  for (let x = 0; x <= W; x += 10) ctx.lineTo(x, 590 + 6 * Math.sin(x / 60 + lt * 2));
+  ctx.lineTo(W, H); ctx.fill();
+  // lumière de la prière
+  const on = easeOut(prog(lt, 1.2, 3.5));
+  const pulse = 0.8 + 0.2 * Math.sin(lt * 2.5);
+  const halo = ctx.createRadialGradient(640, 470, 20, 640, 470, 330);
+  halo.addColorStop(0, `rgba(255,245,190,${0.85 * on * pulse})`); halo.addColorStop(1, 'rgba(255,245,190,0)');
+  ctx.fillStyle = halo; ctx.beginPath(); ctx.arc(640, 470, 330, 0, TAU); ctx.fill();
+  // rayon vers le haut
+  ctx.fillStyle = `rgba(255,250,210,${0.25 * on})`;
+  ctx.beginPath(); ctx.moveTo(600, 0); ctx.lineTo(680, 0); ctx.lineTo(740, 560); ctx.lineTo(540, 560); ctx.fill();
+  // algues & petits poissons avalés
+  for (let i = 0; i < 4; i++) {
+    const sx = 140 + i * 330, sw = Math.sin(lt * 2 + i) * 14;
+    ctx.strokeStyle = '#3f8f5a'; ctx.lineWidth = 8;
+    ctx.beginPath(); ctx.moveTo(sx, 600); ctx.quadraticCurveTo(sx + sw, 540, sx - sw, 480); ctx.stroke();
+  }
+  jonas(640, 600, 1.6, lt, { pose: 'pray', eyesClosed: true });
+  // petits cœurs / étincelles qui montent
+  for (let i = 0; i < 10; i++) {
+    const ph = (lt * 0.3 + rnd(i + 60)) % 1;
+    const a = on * Math.sin(ph * Math.PI);
+    if (i % 2) heart(640 + (rnd(i + 5) - 0.5) * 260 + Math.sin(lt * 2 + i) * 10, 430 - ph * 380, 0.9, `rgba(255,220,230,${a})`);
+    else { ctx.fillStyle = `rgba(255,255,220,${a})`; ctx.beginPath(); ctx.arc(640 + (rnd(i + 5) - 0.5) * 300, 430 - ph * 380, 4, 0, TAU); ctx.fill(); }
+  }
+  bubbles(lt, 220, 600, 6, 11, 120); bubbles(lt, 1060, 600, 6, 21, 120);
+  caption('Jonas prie et demande pardon.', lt, { y: 130, border: '#ff8fab' });
+});
+
+// 7 — Sur la plage, Jonas marche vers Ninive
+scenes.push(lt => {
+  sky('#56b4ff', '#fff1c9');
+  sun(200, 120, 55, lt);
+  cloud(drifting(lt, 14, 600), 110, 0.8); cloud(drifting(lt, 10, 1100), 170, 0.6);
+  // ville au loin
+  city(1050, 440, 0.55, lt);
+  // sable
+  ctx.fillStyle = '#f4d58d';
+  ctx.beginPath(); ctx.moveTo(0, 440); ctx.lineTo(W, 440); ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.fill();
+  // mer à gauche (diagonale)
+  ctx.fillStyle = '#3c8fd6';
+  ctx.beginPath(); ctx.moveTo(0, 430);
+  ctx.lineTo(380, 430);
+  for (let y = 430; y <= H; y += 10) ctx.lineTo(380 - (y - 430) * 0.9 + 12 * Math.sin(y / 30 + lt * 2), y);
+  ctx.lineTo(0, H); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.lineWidth = 5;
+  ctx.beginPath();
+  for (let y = 430; y <= H; y += 10) { const x = 380 - (y - 430) * 0.9 + 12 * Math.sin(y / 30 + lt * 2); y === 430 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); }
+  ctx.stroke();
+  // palmier
+  ctx.save(); ctx.translate(820, 520);
+  ctx.strokeStyle = '#8d6e63'; ctx.lineWidth = 18; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.quadraticCurveTo(20, -90, -10, -190); ctx.stroke();
+  ctx.fillStyle = '#43a047';
+  for (let i = 0; i < 6; i++) {
+    ctx.save(); ctx.translate(-10, -190); ctx.rotate(i / 6 * TAU + Math.sin(lt * 1.5) * 0.05);
+    ctx.beginPath(); ctx.ellipse(55, 0, 60, 14, 0.3, 0, TAU); ctx.fill(); ctx.restore();
+  }
+  ctx.restore();
+  // poisson qui dépose Jonas (0 → 2.2 s) puis repart
+  const back = ease(prog(lt, 2.2, 5));
+  const fmouth = lt < 0.6 ? 0.2 : lt < 1.6 ? lerp(0.2, 1, prog(lt, 0.6, 1.2)) : lerp(1, 0.1, prog(lt, 1.6, 2.2));
+  const fx = 200 - back * 520, fy = 530 + back * 40;
+  // Jonas éjecté
+  const out = prog(lt, 1.0, 1.9);
+  let jx, jy, pose = 'walk';
+  if (lt < 1.0) { jx = null; }
+  else if (out < 1) { jx = lerp(80, 470, out); jy = lerp(540, 600, out) - Math.sin(out * Math.PI) * 170; pose = 'fall'; }
+  else {
+    const w = prog(lt, 2.6, 7.9);
+    jx = lerp(470, 980, w); jy = 600 - w * 70;
+    pose = lt < 2.6 ? 'stand' : 'walk';
+  }
+  fish(fx, fy, 0.9, lt, { mouth: fmouth, flip: true });
+  if (jx !== null) {
+    const sc = lerp(1.15, 0.75, prog(lt, 2.6, 7.9));
+    jonas(jx, jy, sc, lt, { pose, rot: pose === 'fall' ? (1 - out) * -3 : 0 });
+  }
+  // empreintes de pas
+  for (let i = 0; i < 12; i++) {
+    const u = i / 12, px = lerp(480, 980, u), py = 604 - u * 70;
+    if (px > (jx ?? 0) - 30) break;
+    ctx.fillStyle = 'rgba(160,120,60,0.35)';
+    ctx.beginPath(); ctx.ellipse(px, py + (i % 2) * 8, 7, 3.5, 0, 0, TAU); ctx.fill();
+  }
+  caption('Cette fois, Jonas obéit.', lt, { y: 130 });
+});
+
+// 8 — La ville en fête, des cœurs, verset
+scenes.push(lt => {
+  sky('#ffb3c6', '#ffe5a8');
+  sun(1120, 110, 50, lt);
+  cloud(drifting(lt, 14, 200), 100, 0.7, '#fff6fb');
+  ctx.fillStyle = '#f4d58d'; ctx.fillRect(0, 520, W, H - 520);
+  city(640, 540, 1.1, lt, true);
+  // habitants qui sautent de joie
+  for (let i = 0; i < 9; i++) {
+    if (i === 4) continue;
+    villager(140 + i * 125, 640 + (i % 2) * 20, 1, lt, i);
+  }
+  jonas(640, 660, 1.1, lt, { pose: 'happy' });
+  // cœurs qui montent
+  for (let i = 0; i < 22; i++) {
+    const ph = (lt * (0.12 + rnd(i) * 0.1) + rnd(i + 99)) % 1;
+    const x = rnd(i * 4 + 1) * W + Math.sin(lt * 2 + i) * 20;
+    const y = H + 40 - ph * (H + 120);
+    const s = 1.2 + rnd(i + 7) * 1.4;
+    heart(x, y, s * (1 + 0.1 * Math.sin(lt * 6 + i)), ['#ff4d6d', '#ff8fab', '#e63946', '#ffffff'][i % 4]);
+  }
+  // confettis
+  for (let i = 0; i < 60; i++) {
+    const ph = (lt * (0.18 + rnd(i + 3) * 0.12) + rnd(i + 31)) % 1;
+    const x = rnd(i * 9 + 4) * W + Math.sin(lt * 3 + i) * 30, y = -20 + ph * (H + 40);
+    ctx.save(); ctx.translate(x, y); ctx.rotate(lt * 4 + i);
+    ctx.fillStyle = ['#e53935', '#ffd23f', '#43a047', '#1e88e5', '#ab47bc'][i % 5];
+    ctx.fillRect(-5, -3, 10, 6); ctx.restore();
+  }
+  // verset
+  const a = easeOut(prog(lt, 0.6, 1.6));
+  ctx.save(); ctx.globalAlpha = a;
+  const bw = 1000, bh = 200, bx = (W - bw) / 2, by = 40 + (1 - a) * 30;
+  ctx.shadowColor = 'rgba(0,0,0,0.25)'; ctx.shadowBlur = 20; ctx.shadowOffsetY = 6;
+  ctx.fillStyle = 'rgba(255,255,255,0.95)'; rrect(bx, by, bw, bh, 30); ctx.fill();
+  ctx.shadowColor = 'transparent';
+  ctx.strokeStyle = '#ff4d6d'; ctx.lineWidth = 6; ctx.stroke();
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#23395b'; ctx.font = `bold 44px ${FONT}`;
+  ctx.fillText('« Si vous m\'aimez,', W / 2, by + 52);
+  ctx.fillText('gardez mes commandements. »', W / 2, by + 108);
+  ctx.fillStyle = '#e63946'; ctx.font = `bold 34px ${FONT}`;
+  ctx.fillText('Jean 14.15', W / 2, by + 163);
+  heart(bx + 60, by + 105, 2, '#ff4d6d'); heart(bx + bw - 60, by + 105, 2, '#ff4d6d');
+  ctx.restore();
+});
+
+// =========================== RENDU ===========================
+function renderFrame(t) {
+  t = clamp(t, 0, DURATION - 1e-6);
+  const i = Math.min(NSCENES - 1, Math.floor(t / SCENE));
+  const lt = t - i * SCENE;
+  ctx.setTransform(cv.width / W, 0, 0, cv.height / H, 0, 0);
+  ctx.globalAlpha = 1; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  ctx.save(); scenes[i](lt); ctx.restore();
+  // fondu entre les scènes
+  let fade = 0;
+  if (i > 0) fade = Math.max(fade, 1 - prog(lt, 0, 0.35));
+  if (i < NSCENES - 1) fade = Math.max(fade, prog(lt, 7.65, 8));
+  else fade = Math.max(fade, prog(lt, 7.4, 8));
+  if (fade > 0) { ctx.fillStyle = `rgba(0,0,0,${fade})`; ctx.fillRect(0, 0, W, H); }
+}
+window.renderFrame = renderFrame;
+window.DURATION = DURATION;
+
+// ---------- lecteur ----------
+let playing = false, start = 0, cur = 0;
+const btn = document.getElementById('play'), timeEl = document.getElementById('time');
+function loop(now) {
+  if (!playing) return;
+  cur = (now - start) / 1000;
+  if (cur >= DURATION) { cur = DURATION; playing = false; btn.textContent = '▶ Lecture'; }
+  renderFrame(cur); timeEl.textContent = cur.toFixed(1) + ' s';
+  if (playing) requestAnimationFrame(loop);
+}
+btn.onclick = () => {
+  if (playing) { playing = false; btn.textContent = '▶ Lecture'; return; }
+  if (cur >= DURATION) cur = 0;
+  playing = true; btn.textContent = '⏸ Pause'; start = performance.now() - cur * 1000; requestAnimationFrame(loop);
+};
+document.getElementById('restart').onclick = () => { cur = 0; start = performance.now(); renderFrame(0); if (!playing) btn.click(); };
+if (new URLSearchParams(location.search).has('capture')) document.body.classList.add('capture');
+renderFrame(0.01);
+</script>
+</body>
+</html>
